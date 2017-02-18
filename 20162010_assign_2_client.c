@@ -4,15 +4,21 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
+#include <string.h>
 #include <limits.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <math.h>
+#include <ctype.h>
 
 #define SERV_PORT 19000
 #define MAX_LEN 1024
 #define MAXSIZE 1000000
 #define CAESAR_MOD 41
+#define M_ITERATION 15
 
 typedef struct GlobalInfo {
 	int prime;
@@ -24,16 +30,18 @@ int compute_exp_modulo(int a, int b, int p) {
 	long long x = 1, y = a;
 	while (b > 0) {
 		if (b % 2 == 1)
-			x = (x * y) % c;
-		y = (y * y) % c;
+			x = (x * y) % p;
+		y = (y * y) % p;
 		b /= 2;
 	}
-	return (int)(x % c);
+	return (int)(x % p);
 }
 
 /* Function to check primality of random generated numbers using Miller-Rabin Test */
 int MillerRabinTest(int value, int iteration) {
-	int q = value, k = 0;
+	if (value < 2)
+		return 0;
+	int q = value - 1, k = 0;
 	while (!(q % 2)) {
 		q /= 2;
 		k++;
@@ -41,32 +49,32 @@ int MillerRabinTest(int value, int iteration) {
 	for (int i = 0; i < iteration; i++) {
 		int a = rand() % (value - 1) + 1;
 		int current = q;
-		bool flag = false;
+		int flag = 1;
 		int mod_result = compute_exp_modulo(a, current, value);
-		for (int i = 1; i < k; i++) {
+		for (int i = 1; i <= k; i++) {
 			if (mod_result == 1 || mod_result == value - 1) {
-				flag = true;
+				flag = 0;
 				break;
 			}
 			mod_result = (int)((long long)mod_result * mod_result % value);
 		}
 		if (flag)
-			return false;
+			return 0;
 	}
-	return true;
+	return 1;
 }
 
 /* Generate a prime number that is going to be shared 
  * globally between client and server
  */
 int GeneratePrime() {
-	printf("Running Miller Rabin test on random numbers to ascertain primality...\n");
+	printf("* Running Miller-Rabin test to find a large prime number...\n\n");
 	srand(time(NULL));
-	while(true) {
+	while(1) {
 		int current_value = rand() % INT_MAX;
 		if (!(current_value % 2))
 			current_value++;
-		if (MillerRabinTest(current_value, 10) == true)
+		if (MillerRabinTest(current_value, M_ITERATION) == 1)
 			return current_value;
 	}
 }
@@ -85,16 +93,22 @@ int GeneratePrimitiveRoot(int p) {
 				sieve[j] = 1;
 		}
 	}
-	while (true) {
-		int a = rand() % (p - 1) + 1;
-		int phi = p - 1;
-		bool flag = true;
-		for (int i = 2; i < MAXSIZE; i++) {
-			if (!sieve[i] && !(phi % 2)) {
+	while (1) {
+		int a = rand() % (p - 2) + 2;
+		int phi = p - 1, flag = 1, root = sqrt(phi);
+		for (int i = 2; i <= root; i++) {
+			if (!sieve[i] && !(phi % i)) {
 				int mod_result = compute_exp_modulo(a, phi / i, p);
 				if (mod_result == 1) {
-					flag = false;
+					flag = 0;
 					break;
+				}
+				if (MillerRabinTest(phi / i, M_ITERATION) && !(phi % (phi / i))) {
+					int mod_result = compute_exp_modulo(a, phi / (phi / i), p);
+					if (mod_result == 1) {
+						flag = 0;
+						break;
+					}
 				}
 			}
 		}
@@ -115,6 +129,33 @@ char caesar_encrypt(char c, int key) {
 	return c;
 }
 
+void send_message(int sockfd, char message[MAX_LEN], int len) {
+	int n_sent = 0;
+	while (n_sent < len) {
+		int temp;
+		if ((temp = send(sockfd, message + n_sent, len - n_sent, 0)) <= 0) {
+			perror("Error ");
+			exit(-1);
+		}
+		n_sent += temp;
+	}
+}
+
+int recv_message(int sockfd, char buffer[MAX_LEN], int recv_size) {
+	int n_recv = 0;
+	while (n_recv < recv_size) {
+		int temp;
+		if ((temp = recv(sockfd, buffer + n_recv, MAX_LEN - n_recv, 0)) <= 0) {
+			if (temp == 0)
+				break;
+			perror("Error ");
+			exit(-1);
+		}
+		n_recv += temp;
+	}
+	return n_recv;
+}
+
 /* Client main program */
 int main(int argc, char *argv[]) {
 	if (argc < 3) {
@@ -124,17 +165,28 @@ int main(int argc, char *argv[]) {
 	printf("---------------------------------------------------------------\n");
 	printf("CLIENT\n");
 	printf("---------------------------------------------------------------\n");
-	printf("Client started! Establishing connection with the server...\n");
 
-	/* Generate a prime number that is publicly known */
+	/* Generate a prime number and its primitive root (publicly known) */
 	GlobalInfo g;	
 	g.prime = GeneratePrime();
+	printf("** Global prime - %d\n", g.prime);
 	g.generator = GeneratePrimitiveRoot(g.prime);
+	printf("** Global primitive root - %d\n\n", g.generator);
+
+	/* Choose a private key for the client */
+	int private_key = rand() % (g.prime - 1) + 1;
+	int public_key = compute_exp_modulo(g.generator, private_key, g.prime);
+	printf("*** Client private key : %d\n", private_key);
+	printf("*** Client public key : %d\n\n", public_key);
 
 	/* Establish socket connection with the server */
 	int sockfd;
+	if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+		perror("Error ");
+		exit(-1);
+	}
 	struct sockaddr_in serv_addr;
-	memset(serv_addr, 0, sizeof(serv_addr));
+	memset(&serv_addr, 0, sizeof(serv_addr));
 	sockfd = socket(AF_INET, SOCK_STREAM, 0);
 	serv_addr.sin_family = AF_INET;
 	serv_addr.sin_addr.s_addr = inet_addr(argv[1]);
@@ -142,53 +194,43 @@ int main(int argc, char *argv[]) {
 	
 	/* Connect to the server */
 	if (connect(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
-		perror("Error: ");
+		perror("Error ");
 		exit(-1);
 	}
-
-	/* Choose a private key for the client */
-	int private_key = rand() % (g.prime - 1) + 1;
-	int public_key = compute_exp_modulo(g.generator, private_key, g.prime);
 
 	/* Send public_key, generator and prime to the server */
 	char message[MAX_LEN];
 	memset(message, 0, sizeof(message));	 
 	int n = sprintf(message, "%d\n%d\n%d\n", public_key, g.prime, g.generator);
-	if (send(sockfd, message, n, 0) < 0) {
-		perror("Error: ");
-		exit(-1);
-	}
+	send_message(sockfd, message, n);
 
-	/* Receive server public key */
-	n = recv(sockfd, message, MAX_LEN, 0);
-	int server_public_key = atoi(message);
+	/* Receive server public key */ 
+	n = recv_message(sockfd, message, sizeof(int) + sizeof(char));
+	int public_key_server = atoi(message);
+	printf("**** Server public key : %d\n\n", public_key_server);
 
-	int shared_key = compute_exp_modulo(server_public_key, private_key, g.prime);
+	/* Compute shared key and caesar key */
+	int shared_key = compute_exp_modulo(public_key_server, private_key, g.prime);
 	int caesar_key = shared_key % CAESAR_MOD;
+	printf("***** Shared key : %d\n", shared_key);
+	printf("***** Caesar key : %d\n\n", caesar_key);
 
 	/* Send file contents to server after encryption */
-	File *input;
+	FILE *input;
 	if ((input = fopen(argv[2], "r")) == NULL) {
-		perror("Error: ");
+		perror("Error ");
 		exit(-1);
 	}
+	printf("****** Sending file to server in encrypted format...\n");
 	while ((n = fread(message, sizeof(char), MAX_LEN, input)) > 0) {
 		for (int i = 0; i < n; i++) 
-			message[i] = caesar_encrypt(message[i], caesar_key);
-		int n_sent = 0;
-		while (n_sent != n) {
-			int temp;
-			if ((temp = send(sockfd, message + n_sent, n - n_sent, 0)) < 0) {
-				perror("Error: ");
-				exit(-1);
-			}
-			n_sent += temp;
-		}
-	}
-
+			message[i] = caesar_encrypt(toupper(message[i]), caesar_key);
+		send_message(sockfd, message, n);
+	} 
+	fclose(input);
+	printf("****** Finished sending the data to server!\n\n"); 
+	printf("---------------------------------------------------------------\n");
 	close(sockfd);
-
-	printf("Finished sending the data to server!\n");
 	return 0;
 }
 
