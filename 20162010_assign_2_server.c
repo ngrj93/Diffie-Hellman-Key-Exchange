@@ -144,19 +144,21 @@ int main(int argc, char *argv[]) {
 		printf("**** Caesar key : %d\n\n", caesar_key);
 
 		/* Receive encrypted text from client and write to output.txt file */
-		printf("***** Receiving file from client...\n");
+		printf("***** Receiving file from client...\n\n");
 		FILE *output;
 		if((output = fopen("output.txt","w")) < 0) {
 			perror("Error ");
 			exit(-1);
 		}
 		while ((n = recv_message(cli_sockfd, buffer, MAX_LEN)) > 0) {
-			for (int i = 0; i < n; i++) 
+			for (int i = 0; i < n; i++) {
+				printf("%c", buffer[i]);
 				buffer[i] = caesar_decrypt(buffer[i], caesar_key);
+			}
 			fwrite(buffer, sizeof(char), n, output);
 		}
 		fclose(output);
-		printf("***** Finished receiving data from client!\n\n");
+		printf("\n\n***** Finished receiving data from client!\n\n");
 		printf("----------------------------------------------------------------\n");
 		close(cli_sockfd);
 	}
