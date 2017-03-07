@@ -1,0 +1,14 @@
+Compilation steps :
+
+Server
+gcc 20162010_assign_2_server.c -lm -std=c99 -o server
+
+Client 
+gcc 20162010_assign_2_client.c -lm -std=c99 -o client
+
+
+Run programs :
+
+./server 127.0.0.1
+
+./client 127.0.0.1 input.txt
